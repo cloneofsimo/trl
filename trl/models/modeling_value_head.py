@@ -159,8 +159,17 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         kwargs["output_hidden_states"] = True  # this had already been set in the LORA / PEFT examples
         kwargs["past_key_values"] = past_key_values
 
+        def set_lora_multiplexer(_model, index):
+            for name, module in _model.named_modules():
+                if module.__class__.__name__ == "Multiplexer":
+                    module.index = index
+                    
+
         if self.is_peft_model and self.pretrained_model.active_peft_config.peft_type == "PREFIX_TUNING":
             kwargs.pop("past_key_values")
+
+
+        set_lora_multiplexer(self.pretrained_model, 0)
 
         base_model_output = self.pretrained_model(
             input_ids=input_ids,
@@ -168,14 +177,26 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
             **kwargs,
         )
 
-        last_hidden_state = base_model_output.hidden_states[-1]
+        #last_hidden_state = base_model_output.hidden_states[-1]
         lm_logits = base_model_output.logits
         loss = base_model_output.loss
+
+        set_lora_multiplexer(self.pretrained_model, 1)
+
+        critic_model_output = self.pretrained_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs,
+        )
+
+        last_hidden_state = critic_model_output.hidden_states[-1]
 
         if last_hidden_state.device != self.v_head.summary.weight.device:
             last_hidden_state = last_hidden_state.to(self.v_head.summary.weight.device)
 
         value = self.v_head(last_hidden_state).squeeze(-1)
+        set_lora_multiplexer(self.pretrained_model, 0)
+
 
         # force upcast in fp32 if logits are in half-precision
         if lm_logits.dtype != torch.float32:
